@@ -2001,6 +2001,81 @@ static int cli_parse_set_dyncookie_key_backend(char **args, char *payload, struc
 	return 1;
 }
 
+// shuffle_server is Non thread-safe function,
+// lock before call it
+void shuffle_server(struct server *srv) {
+    struct stream *stream, *stream_bck;
+    HA_SPIN_LOCK(SERVER_LOCK, &srv->lock);
+    // server has shuffle task in running
+    if (!LIST_ISEMPTY(&srv->shuffle_conns)) {
+        HA_SPIN_UNLOCK(SERVER_LOCK, &srv->lock);
+        return;
+    }
+
+    list_for_each_entry_safe(stream, stream_bck, &srv->actconns, by_srv) {
+        if (stream->srv_conn == srv) {
+            // delete from actconns
+            LIST_DEL(&stream->by_srv);
+            LIST_ADD(&srv->shuffle_conns, &stream->by_srv);
+        }
+    }
+    HA_SPIN_UNLOCK(SERVER_LOCK, &srv->lock);
+    //
+    __ha_barrier_full();
+    if ((volatile void *)srv->shuffle_node.node.leaf_p == NULL) {
+        HA_SPIN_LOCK(OTHER_LOCK, &shuffle_conn_srv_lock);
+        if ((volatile void *)srv->shuffle_node.node.leaf_p == NULL) {
+            srv->shuffle_node.key = tick_add(srv->shuffle_delay,
+                                          now_ms);
+            eb32_insert(&shuffle_conn_srv, &srv->shuffle_node);
+            if (!task_in_wq(shuffle_conn_task) && !
+                    task_in_rq(shuffle_conn_task)) {
+                task_schedule(shuffle_conn_task,
+                              srv->shuffle_node.key);
+            }
+        }
+        HA_SPIN_UNLOCK(OTHER_LOCK, &shuffle_conn_srv_lock);
+    }
+}
+
+/* Parses the "shuffle sessions" directive, it always returns 1.
+ * Grabs the proxy lock and each server's lock.
+ */
+static int cli_parse_shuffle_sessions(char **args, char *payload, struct appctx *appctx, void *private)
+{
+    struct proxy *px;
+    struct server *s;
+
+    if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
+        return 1;
+
+    px = cli_find_backend(appctx, args[2]);
+    if (!px)
+        return 1;
+
+    if (px->state == PR_STSTOPPED)
+        return cli_msg(appctx, LOG_NOTICE, "Backend was previously shut down, cannot shuffle.\n");
+
+    if (px->state == PR_STPAUSED)
+        return cli_msg(appctx, LOG_NOTICE, "Backend is already disabled, cannot shuffle\n");
+
+    if (*args[3]) {
+        s = findserver(px, args[3]);
+        if (!s) {
+            return cli_msg(appctx, LOG_NOTICE, "No such server, cannot shuffle\n");
+        }
+        shuffle_server(s);
+        cli_msg(appctx, LOG_NOTICE, "Server is shuffle successful \n");
+    } else {
+        for (s = px->srv; s != NULL; s = s->next) {
+            shuffle_server(s);
+        }
+        cli_msg(appctx, LOG_NOTICE, "Backend is shuffle successful \n");
+    }
+
+    return 1;
+}
+
 /* Parses the "set maxconn frontend" directive, it always returns 1.
  *
  * Grabs the proxy lock.
@@ -2346,6 +2421,7 @@ static struct cli_kw_list cli_kws = {{ },{
 	{ { "enable", "dynamic-cookie", "backend", NULL }, "enable dynamic-cookie backend : enable dynamic cookies on a specific backend", cli_parse_enable_dyncookie_backend, NULL },
 	{ { "disable", "dynamic-cookie", "backend", NULL }, "disable dynamic-cookie backend : disable dynamic cookies on a specific backend", cli_parse_disable_dyncookie_backend, NULL },
 	{ { "show", "errors", NULL }, "show errors    : report last request and response errors for each proxy", cli_parse_show_errors, cli_io_handler_show_errors, NULL },
+    { { "shuffle", "sessions", NULL}, "shuffle sessions: shuffle sessions, shuffle sessions of backend for rebalance of long links", cli_parse_shuffle_sessions, NULL, NULL },
 	{{},}
 }};
 

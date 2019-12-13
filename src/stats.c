@@ -2080,6 +2080,7 @@ static void stats_dump_html_px_end(struct stream_interface *si, struct proxy *px
 			      "<option value=\"arunn\">Agent: force UP</option>"
 			      "<option value=\"adown\">Agent: force DOWN</option>"
 			      "<option value=\"shutdown\">Kill Sessions</option>"
+                  "<option value=\"shuffle\">Shuffle Sessions</option>"
 			      "</select>"
 			      "<input type=\"hidden\" name=\"b\" value=\"#%d\">"
 			      "&nbsp;<input type=\"submit\" value=\"Apply\">"
@@ -2912,6 +2913,9 @@ static int stats_process_http_post(struct stream_interface *si)
 				else if (strcmp(value, "shutdown") == 0) {
 					action = ST_ADM_ACTION_SHUTDOWN;
 				}
+                else if (strcmp(value, "shuffle") == 0) {
+                    action = ST_ADM_ACTION_SHUFFLE;
+                }
 				else if (strcmp(value, "dhlth") == 0) {
 					action = ST_ADM_ACTION_DHLTH;
 				}
@@ -3092,6 +3096,13 @@ static int stats_process_http_post(struct stream_interface *si)
 						break;
 					}
 					HA_SPIN_UNLOCK(SERVER_LOCK, &sv->lock);
+
+					// shuffle server
+					if (action == ST_ADM_ACTION_SHUFFLE) {
+					    if (px->state != PR_STSTOPPED) {
+                            shuffle_server(sv);
+                        }
+					}
 				} else {
 					/* the server name is unknown or ambiguous (duplicate names) */
 					total_servers++;

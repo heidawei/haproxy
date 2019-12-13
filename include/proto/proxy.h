@@ -72,6 +72,7 @@ void proxy_adjust_all_maxconn();
 struct proxy *cli_find_frontend(struct appctx *appctx, const char *arg);
 struct proxy *cli_find_frontend(struct appctx *appctx, const char *arg);
 
+void shuffle_server(struct server *srv);
 /*
  * This function returns a string containing the type of the proxy in a format
  * suitable for error messages, from its capabilities.

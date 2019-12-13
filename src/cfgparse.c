@@ -478,6 +478,8 @@ void init_default_instance()
 	defproxy.defsrv.max_reuse = -1;
 	defproxy.defsrv.max_idle_conns = -1;
 	defproxy.defsrv.pool_purge_delay = 5000;
+	defproxy.defsrv.shuffle_delay = 1000;
+	defproxy.defsrv.shuffle_limit = 5;
 	defproxy.defsrv.slowstart = 0;
 	defproxy.defsrv.onerror = DEF_HANA_ONERR;
 	defproxy.defsrv.consecutive_errors_limit = DEF_HANA_ERRLIMIT;
@@ -3670,13 +3672,29 @@ out_uri_auth_compat:
 				newsrv->curr_idle_thr = calloc(global.nbthread, sizeof(int));
 				if (!newsrv->curr_idle_thr)
 					goto err;
-				continue;
-			err:
-				ha_alert("parsing [%s:%d] : failed to allocate idle connection tasks for server '%s'.\n",
-					 newsrv->conf.file, newsrv->conf.line, newsrv->id);
-				cfgerr++;
-				continue;
 			}
+
+            /* shuffle init */
+            if (newsrv->shuffle_limit <= 0) {
+                newsrv->shuffle_limit = 5;
+                newsrv->shuffle_delay = 1000;
+            }
+            if (newsrv->shuffle_limit > 0) {
+                if (shuffle_conn_task == NULL) {
+                    shuffle_conn_task = task_new(MAX_THREADS_MASK);
+                    if (!shuffle_conn_task)
+                        goto err;
+                    shuffle_conn_task->process = srv_shuffle_connections;
+                    shuffle_conn_task->context = NULL;
+                }
+            }
+            continue;
+
+            err:
+            ha_alert("parsing [%s:%d] : failed to allocate idle connection tasks for server '%s'.\n",
+                     newsrv->conf.file, newsrv->conf.line, newsrv->id);
+            cfgerr++;
+            continue;
 		}
 	}
 

@@ -68,6 +68,10 @@ struct task *idle_conn_cleanup[MAX_THREADS] = { NULL };
 struct mt_list toremove_connections[MAX_THREADS];
 __decl_hathreads(HA_SPINLOCK_T toremove_lock[MAX_THREADS]);
 
+__decl_hathreads(HA_SPINLOCK_T shuffle_conn_srv_lock);
+struct eb_root shuffle_conn_srv = EB_ROOT;
+struct task *shuffle_conn_task = NULL;
+
 /* The server names dictionary */
 struct dict server_name_dict = {
 	.name = "server names",
@@ -454,6 +458,58 @@ static int srv_parse_pool_max_conn(char **args, int *cur_arg, struct proxy *curp
 
 	return 0;
 }
+
+static int srv_parse_shuffle_delay(char **args, int *cur_arg, struct proxy *curproxy, struct server *newsrv, char **err)
+{
+    const char *res;
+    char *arg;
+    unsigned int time;
+
+    arg = args[*cur_arg + 1];
+    if (!*arg) {
+        memprintf(err, "'%s' expects <value> as argument.\n", args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+    res = parse_time_err(arg, &time, TIME_UNIT_MS);
+    if (res == PARSE_TIME_OVER) {
+        memprintf(err, "timer overflow in argument '%s' to '%s' (maximum value is 2147483647 ms or ~24.8 days)",
+                  args[*cur_arg+1], args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+    else if (res == PARSE_TIME_UNDER) {
+        memprintf(err, "timer underflow in argument '%s' to '%s' (minimum non-null value is 1 ms)",
+                  args[*cur_arg+1], args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+    else if (res) {
+        memprintf(err, "unexpected character '%c' in argument to <%s>.\n",
+                  *res, args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+    newsrv->shuffle_delay = time;
+
+    return 0;
+}
+
+static int srv_parse_shuffle_limit(char **args, int *cur_arg, struct proxy *curproxy, struct server *newsrv, char **err)
+{
+    char *arg;
+
+    arg = args[*cur_arg + 1];
+    if (!*arg) {
+        memprintf(err, "'%s' expects <value> as argument.\n", args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+
+    newsrv->shuffle_limit = atoi(arg);
+    if ((int)newsrv->shuffle_limit < 1) {
+        memprintf(err, "'%s' must be >= 1", args[*cur_arg]);
+        return ERR_ALERT | ERR_FATAL;
+    }
+
+    return 0;
+}
+
 
 /* parse the "id" server keyword */
 static int srv_parse_id(char **args, int *cur_arg, struct proxy *curproxy, struct server *newsrv, char **err)
@@ -1372,7 +1428,9 @@ static struct srv_kw_list srv_kws = { "ALL", { }, {
 	{ "observe",             srv_parse_observe,             1,  1 }, /* Enables health adjusting based on observing communication with the server */
 	{ "pool-max-conn",       srv_parse_pool_max_conn,       1,  1 }, /* Set the max number of orphan idle connections, 0 means unlimited */
 	{ "pool-purge-delay",    srv_parse_pool_purge_delay,    1,  1 }, /* Set the time before we destroy orphan idle connections, defaults to 1s */
-	{ "proto",               srv_parse_proto,               1,  1 }, /* Set the proto to use for all outgoing connections */
+    { "shuffle-delay",       srv_parse_shuffle_delay,       1,  1 }, /* Set the time before we destroy orphan shuffle connections, defaults to 1s */
+    { "shuffle-limit",       srv_parse_shuffle_limit,       1,  1 }, /* Set the limit of orphan shuffle connections */
+    { "proto",               srv_parse_proto,               1,  1 }, /* Set the proto to use for all outgoing connections */
 	{ "proxy-v2-options",    srv_parse_proxy_v2_options,    1,  1 }, /* options for send-proxy-v2 */
 	{ "redir",               srv_parse_redir,               1,  1 }, /* Enable redirection mode */
 	{ "send-proxy",          srv_parse_send_proxy,          0,  1 }, /* Enforce use of PROXY V1 protocol */
@@ -1766,6 +1824,8 @@ static void srv_settings_cpy(struct server *srv, struct server *src, int srv_tmp
 	srv->maxqueue                 = src->maxqueue;
 	srv->minconn                  = src->minconn;
 	srv->maxconn                  = src->maxconn;
+	srv->shuffle_delay            = src->shuffle_delay;
+	srv->shuffle_limit            = src->shuffle_limit;
 	srv->slowstart                = src->slowstart;
 	srv->observe                  = src->observe;
 	srv->onerror                  = src->onerror;
@@ -1836,6 +1896,7 @@ struct server *new_server(struct proxy *proxy)
 	srv->obj_type = OBJ_TYPE_SERVER;
 	srv->proxy = proxy;
 	LIST_INIT(&srv->actconns);
+	LIST_INIT(&srv->shuffle_conns);
 	srv->pendconns = EB_ROOT;
 
 	srv->next_state = SRV_ST_RUNNING; /* early server setup */

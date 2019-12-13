@@ -224,12 +224,16 @@ struct server {
 	struct list *idle_conns;		/* sharable idle connections attached or not to a stream interface */
 	struct list *safe_conns;		/* safe idle connections attached to stream interfaces, shared */
 	struct mt_list *idle_orphan_conns;         /* Orphan connections idling */
+	struct list shuffle_conns;      /* shuffle connections */
 	unsigned int pool_purge_delay;          /* Delay before starting to purge the idle conns pool */
+	unsigned int shuffle_delay;             /* Delay before starting to purge the shuffle conns pool */
+	unsigned int shuffle_limit;             /* Limit of shuffle connections for shuffle task dispatch */
 	unsigned int max_idle_conns;            /* Max number of connection allowed in the orphan connections list */
 	unsigned int curr_idle_conns;           /* Current number of orphan idling connections */
 	unsigned int *curr_idle_thr;            /* Current number of orphan idling connections per thread */
 	int max_reuse;                          /* Max number of requests on a same connection */
 	struct eb32_node idle_node;             /* When to next do cleanup in the idle connections */
+	struct eb32_node shuffle_node;          /* When to next do shuffle in the shuffle connections */
 	struct task *warmup;                    /* the task dedicated to the warmup when slowstart is set */
 
 	struct conn_src conn_src;               /* connection source settings */

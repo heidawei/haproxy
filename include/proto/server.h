@@ -43,6 +43,10 @@ extern struct task *idle_conn_task;
 extern struct task *idle_conn_cleanup[MAX_THREADS];
 extern struct mt_list toremove_connections[MAX_THREADS];
 
+__decl_hathreads(extern HA_SPINLOCK_T shuffle_conn_srv_lock);
+extern struct eb_root shuffle_conn_srv;
+extern struct task *shuffle_conn_task;
+
 int srv_downtime(const struct server *s);
 int srv_lastsession(const struct server *s);
 int srv_getinter(const struct check *check);
@@ -67,6 +71,7 @@ int snr_resolution_error_cb(struct dns_requester *requester, int error_code);
 struct server *snr_check_ip_callback(struct server *srv, void *ip, unsigned char *ip_family);
 struct task *srv_cleanup_idle_connections(struct task *task, void *ctx, unsigned short state);
 struct task *srv_cleanup_toremove_connections(struct task *task, void *context, unsigned short state);
+struct task *srv_shuffle_connections(struct task *task, void *ctx, unsigned short state);
 
 /* increase the number of cumulated connections on the designated server */
 static inline void srv_inc_sess_ctr(struct server *s)
